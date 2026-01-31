@@ -11,35 +11,35 @@ import re
 # ==============================
 load_dotenv()
 
-# ==============================
-# FLASK APP
-# ==============================
 app = Flask(__name__)
 
 # ==============================
-# DATABASE (Supabase Postgres ONLY)
+# DATABASE
 # ==============================
 DATABASE_URL = os.environ.get("DATABASE_URL")
-
 if not DATABASE_URL:
-    raise Exception("❌ DATABASE_URL not set. Check .env (local) or Render env vars")
+    raise Exception("❌ DATABASE_URL not set")
 
-conn = psycopg2.connect(
-    DATABASE_URL,
-    sslmode="require"
-)
-cursor = conn.cursor()
+def get_db():
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    phone TEXT PRIMARY KEY,
-    city TEXT,
-    bhk TEXT,
-    budget INTEGER,
-    updated_at TIMESTAMP DEFAULT now()
-)
-""")
-conn.commit()
+def init_db():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            phone TEXT PRIMARY KEY,
+            city TEXT,
+            bhk TEXT,
+            budget INTEGER,
+            updated_at TIMESTAMP DEFAULT now()
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+init_db()
 
 # ==============================
 # LOAD GOOGLE SHEET
@@ -68,7 +68,7 @@ def clean_price(val):
 df["price_numeric"] = df["price"].apply(clean_price)
 
 # ==============================
-# NLP ENTITY EXTRACTION
+# NLP
 # ==============================
 def extract_entities(text):
     text = text.lower()
@@ -94,18 +94,16 @@ def extract_entities(text):
     return city, bhk, budget
 
 # ==============================
-# FILTER ENGINE
+# FILTER
 # ==============================
 def filter_projects(city, bhk, budget):
     data = df.copy()
-
     if city:
         data = data[data["city"] == city]
     if bhk:
         data = data[data["bhk"].str.contains(bhk, na=False)]
     if budget:
         data = data[data["price_numeric"] <= budget]
-
     return data.head(5)
 
 # ==============================
@@ -119,82 +117,54 @@ def whatsapp_bot():
     resp = MessagingResponse()
     msg = resp.message()
 
-    # Load user state
-    cursor.execute(
-        "SELECT city, bhk, budget FROM users WHERE phone=%s",
-        (from_number,)
-    )
-    row = cursor.fetchone()
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT city, bhk, budget FROM users WHERE phone=%s", (from_number,))
+    row = cur.fetchone()
 
     state = {"city": None, "bhk": None, "budget": None}
     if row:
         state["city"], state["bhk"], state["budget"] = row
 
-    # NLP update
     city, bhk, budget = extract_entities(incoming)
 
-    if city:
-        state["city"] = city
-    if bhk:
-        state["bhk"] = bhk
-    if budget:
-        state["budget"] = budget
+    if city: state["city"] = city
+    if bhk: state["bhk"] = bhk
+    if budget: state["budget"] = budget
 
-    # Save state
-    cursor.execute("""
+    cur.execute("""
         INSERT INTO users (phone, city, bhk, budget)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT (phone)
         DO UPDATE SET
-            city = EXCLUDED.city,
-            bhk = EXCLUDED.bhk,
-            budget = EXCLUDED.budget,
-            updated_at = now();
+            city=EXCLUDED.city,
+            bhk=EXCLUDED.bhk,
+            budget=EXCLUDED.budget,
+            updated_at=now();
     """, (from_number, state["city"], state["bhk"], state["budget"]))
     conn.commit()
 
-    # Greeting
     if incoming in ["hi", "hello", "hey", "menu", "start"]:
         msg.body(
-            "👋 *Welcome to RealEstate Bot* 🏠\n\n"
-            "Example:\n"
+            "👋 *Welcome to RealEstate Bot*\n\n"
             "• 2 bhk in noida under 75 lakh\n"
             "• 3 bhk gurgaon under 1 crore"
         )
-        return str(resp)
-
-    # Auto search
-    if state["city"] and state["bhk"] and state["budget"]:
-        results = filter_projects(
-            state["city"], state["bhk"], state["budget"]
-        )
-
+    elif state["city"] and state["bhk"] and state["budget"]:
+        results = filter_projects(state["city"], state["bhk"], state["budget"])
         if results.empty:
-            msg.body("❌ No matching projects found.\nType *menu* to restart.")
-            return str(resp)
+            msg.body("❌ No matching projects found.")
+        else:
+            reply = "🏗 *Matching Projects*\n\n"
+            for _, r in results.iterrows():
+                reply += f"🏢 {r['project_name'].title()}\n💰 {r['price']}\n🔗 {r['link']}\n\n"
+            msg.body(reply)
+    else:
+        msg.body("📍 City → 🏠 BHK → 💰 Budget")
 
-        reply = "🏗 *Matching Projects*\n\n"
-        for _, row in results.iterrows():
-            reply += (
-                f"🏢 *{row['project_name'].title()}*\n"
-                f"📍 {row['city'].title()}\n"
-                f"🏠 {row['bhk']}\n"
-                f"💰 {row['price']}\n"
-                f"🔗 {row['link']}\n\n"
-            )
-
-        reply += "🔁 Type *menu* for new search"
-        msg.body(reply)
-        return str(resp)
-
-    # Ask missing info
-    if not state["city"]:
-        msg.body("📍 Which city? (Noida / Gurgaon / Greater Noida)")
-    elif not state["bhk"]:
-        msg.body("🏠 How many BHK? (1 / 2 / 3 bhk)")
-    elif not state["budget"]:
-        msg.body("💰 Budget? (75 lakh / 1 crore)")
-
+    cur.close()
+    conn.close()
     return str(resp)
 
 # ==============================
