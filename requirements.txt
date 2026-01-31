@@ -2,6 +2,5 @@ flask
 gunicorn
 twilio
 pandas
-requests
 psycopg2-binary
 python-dotenv
