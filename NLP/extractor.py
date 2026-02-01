@@ -1,24 +1,56 @@
 import re
 
-def extract_entities(text):
+CITIES = [
+    "noida",
+    "greater noida",
+    "gurgaon",
+    "gurugram",
+    "delhi",
+    "ghaziabad"
+]
+
+def extract_entities(text: str):
     text = text.lower()
-    city = bhk = budget = None
 
-    if "greater noida" in text:
-        city = "greater noida"
-    elif "noida" in text:
-        city = "noida"
-    elif "gurgaon" in text:
-        city = "gurgaon"
+    city = None
+    bhk = None
+    budget = None
 
-    bhk_match = re.search(r"(\d)\s*bhk", text)
-    if bhk_match:
-        bhk = bhk_match.group(1)
+    # -------- CITY ----------
+    for c in CITIES:
+        if c in text:
+            city = c
+            break
 
-    price_match = re.search(r"(\d+)\s*(lakh|lac|crore|cr)", text)
-    if price_match:
-        value = int(price_match.group(1))
-        unit = price_match.group(2)
-        budget = value * 100000 if "l" in unit else value * 10000000
+    # -------- BHK ----------
+    bhk_patterns = [
+        r"(\d)\s*bhk",
+        r"(\d)\s*bedroom",
+        r"(\d)\s*bed"
+    ]
+    for p in bhk_patterns:
+        m = re.search(p, text)
+        if m:
+            bhk = m.group(1)
+            break
+
+    # -------- BUDGET ----------
+    # examples: 70 lakh, 1 crore, under 80l, below 1.2 cr
+    price_patterns = [
+        r"(\d+\.?\d*)\s*(lakh|lac|l)",
+        r"(\d+\.?\d*)\s*(crore|cr)"
+    ]
+
+    for p in price_patterns:
+        m = re.search(p, text)
+        if m:
+            value = float(m.group(1))
+            unit = m.group(2)
+
+            if "l" in unit:
+                budget = int(value * 100000)
+            else:
+                budget = int(value * 10000000)
+            break
 
     return city, bhk, budget
